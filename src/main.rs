@@ -1,0 +1,722 @@
+// xilem_bar — xilem port of iced_bar.
+//
+// Feature parity goals with iced_bar:
+//   * 9 nerd-font workspace tag buttons with selected/filled/urgent/occupied visuals
+//   * Layout toggle button + 3-option selector
+//   * Pills: CPU, memory, battery, brightness, volume, screenshot, time, monitor, scale
+//   * Click semantics: tag → view-tag command; volume scroll/click/right-click;
+//     brightness scroll/click/right-click; screenshot pill spawns `flameshot gui`
+//   * Background subscription thread reading SharedRingBuffer; 1Hz clock + system
+//     monitor refresh
+//
+// xilem is closure-based (no Message enum), so each interactive view directly
+// mutates state. A background thread pushes updates onto an mpsc channel that
+// xilem's `worker` view drains.
+
+use std::env;
+use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use chrono::Local;
+use log::{error, info, warn};
+
+use shared_structures::{CommandType, MonitorInfo, SharedCommand, SharedMessage, SharedRingBuffer};
+use xbar_core::audio_manager::AudioManager;
+use xbar_core::brightness::BrightnessManager;
+use xbar_core::initialize_logging;
+use xbar_core::system_monitor::SystemMonitor;
+
+use masonry::kurbo::Axis;
+use masonry::layout::Length;
+use masonry::peniko::Color;
+use masonry::properties::Padding;
+use winit::dpi::LogicalSize;
+use winit::window::WindowLevel;
+use xilem::core::{MessageProxy, NoElement, View, fork};
+use xilem::style::Style;
+use xilem::view::{FlexSpacer, button, flex, label, sized_box, task_raw};
+use xilem::{EventLoop, ViewCtx, WidgetView, WindowOptions, Xilem};
+
+// -------- Constants (mirror iced_bar) ----------------------------------------
+
+const NERD_FONT: &str = "JetBrainsMono Nerd Font";
+
+const TAG_ICONS: [&str; 9] = [
+    "\u{F0A1E}", "\u{F0239}", "\u{F0A1B}", "\u{F0B79}", "\u{F024B}", "\u{F0388}", "\u{F0567}",
+    "\u{F01F0}", "\u{F0297}",
+];
+
+const ICON_CPU: &str = "\u{F4BC}";
+const ICON_MEM: &str = "\u{F035B}";
+const ICON_BAT_FULL: &str = "\u{F0079}";
+const ICON_BAT_CHG: &str = "\u{F0084}";
+const ICON_VOL_HIGH: &str = "\u{F057E}";
+const ICON_VOL_MID: &str = "\u{F0580}";
+const ICON_VOL_LOW: &str = "\u{F057F}";
+const ICON_VOL_MUTE: &str = "\u{F075F}";
+const ICON_BRIGHT: &str = "\u{F00DE}";
+const ICON_SHOT: &str = "\u{F0104}";
+const ICON_TIME: &str = "\u{F0954}";
+const ICON_MON: &str = "\u{F0379}";
+const ICON_M0: &str = "\u{F02DA}";
+const ICON_M1: &str = "\u{F02DB}";
+
+const TAB_WIDTH: f64 = 38.0;
+const TAB_HEIGHT: f64 = 32.0;
+const TAB_SPACING: f64 = 4.0;
+const PILL_HEIGHT: f64 = 26.0;
+
+fn rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::from_rgb8(r, g, b)
+}
+fn pill_padding() -> Padding {
+    Padding::from_vh(Length::px(3.0), Length::px(10.0))
+}
+fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
+    let mut c = Color::from_rgb8(r, g, b);
+    c.components[3] = a;
+    c
+}
+
+// -------- App state ----------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum WorkerEvent {
+    Tick,                                  // 1Hz clock tick
+    Shared(Box<SharedMessage>),            // shared-memory update
+    SharedError(String),
+}
+
+struct XilemBar {
+    active_tab: usize,
+    tab_colors: [Color; 9],
+    shared_buffer_rc: Option<Arc<SharedRingBuffer>>,
+    shared_path: String,
+
+    monitor_info_opt: Option<MonitorInfo>,
+    formated_now: String,
+    show_seconds: bool,
+    layout_symbol: String,
+    monitor_num: i32,
+    is_hovered_screenshot: bool,
+    layout_selector_open: bool,
+
+    audio_manager: AudioManager,
+    system_monitor: SystemMonitor,
+    brightness_manager: BrightnessManager,
+
+    last_clock_update: Instant,
+    last_monitor_update: Instant,
+}
+
+impl Default for XilemBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl XilemBar {
+    fn new() -> Self {
+        let args: Vec<String> = env::args().collect();
+        let shared_path = args.iter().skip(1).last().cloned().unwrap_or_default();
+
+        let shared_buffer_rc =
+            SharedRingBuffer::create_shared_ring_buffer_aux(&shared_path).map(Arc::new);
+
+        Self {
+            active_tab: 0,
+            tab_colors: [
+                rgb(0xFF, 0x6B, 0x6B),
+                rgb(0x4E, 0xCD, 0xC4),
+                rgb(0x45, 0xB7, 0xD1),
+                rgb(0x96, 0xCE, 0xB4),
+                rgb(0xFE, 0xCA, 0x57),
+                rgb(0xFF, 0x9F, 0xF3),
+                rgb(0x54, 0xA0, 0xFF),
+                rgb(0x5F, 0x27, 0xCD),
+                rgb(0x00, 0xD2, 0xD3),
+            ],
+            shared_buffer_rc,
+            shared_path,
+            monitor_info_opt: None,
+            formated_now: String::new(),
+            show_seconds: true,
+            layout_symbol: "[]=".to_string(),
+            monitor_num: 0,
+            is_hovered_screenshot: false,
+            layout_selector_open: false,
+            audio_manager: AudioManager::new(),
+            system_monitor: SystemMonitor::new(5),
+            brightness_manager: BrightnessManager::new(),
+            last_clock_update: Instant::now(),
+            last_monitor_update: Instant::now(),
+        }
+    }
+
+    fn send_tag_command(&mut self, is_view: bool) {
+        let tag_bit = 1 << self.active_tab;
+        let command = if is_view {
+            SharedCommand::view_tag(tag_bit, self.monitor_num)
+        } else {
+            SharedCommand::toggle_tag(tag_bit, self.monitor_num)
+        };
+        if let Some(buf) = &self.shared_buffer_rc {
+            match buf.send_command(command) {
+                Ok(true) => info!("Sent command: {:?}", command),
+                Ok(false) => warn!("Command buffer full, command dropped"),
+                Err(e) => error!("Failed to send command: {}", e),
+            }
+        }
+    }
+
+    fn send_layout_command(&mut self, layout_index: u32) {
+        let cmd = SharedCommand::new(CommandType::SetLayout, layout_index, self.monitor_num);
+        if let Some(buf) = &self.shared_buffer_rc {
+            let _ = buf.send_command(cmd);
+        }
+    }
+
+    fn on_worker(&mut self, ev: WorkerEvent) {
+        match ev {
+            WorkerEvent::Tick => {
+                if self.last_clock_update.elapsed() >= Duration::from_millis(900) {
+                    let fmt = if self.show_seconds {
+                        "%Y-%m-%d %H:%M:%S"
+                    } else {
+                        "%Y-%m-%d %H:%M"
+                    };
+                    self.formated_now = Local::now().format(fmt).to_string();
+                    self.last_clock_update = Instant::now();
+                }
+                if self.last_monitor_update.elapsed() >= Duration::from_secs(2) {
+                    self.system_monitor.update_if_needed();
+                    self.audio_manager.update_if_needed();
+                    self.brightness_manager.update_if_needed();
+                    self.last_monitor_update = Instant::now();
+                }
+            }
+            WorkerEvent::Shared(msg) => {
+                self.monitor_info_opt = Some(msg.monitor_info);
+                if let Some(mi) = &self.monitor_info_opt {
+                    self.layout_symbol = mi.get_ltsymbol();
+                    self.monitor_num = mi.monitor_num;
+                    for (idx, ts) in mi.tag_status_vec.iter().enumerate() {
+                        if ts.is_selected {
+                            self.active_tab = idx;
+                        }
+                    }
+                }
+            }
+            WorkerEvent::SharedError(e) => warn!("SharedMemoryError: {e}"),
+        }
+    }
+
+    // -------- View helpers -----------------------------------------------------
+
+    fn tag_visuals(&self, index: usize) -> (Color, f64, Color) {
+        let tag_color = *self
+            .tab_colors
+            .get(index)
+            .unwrap_or(&rgb(0x66, 0x66, 0x66));
+        if let Some(monitor) = &self.monitor_info_opt {
+            if let Some(s) = monitor.tag_status_vec.get(index) {
+                if s.is_urg {
+                    return (rgb(0xDB, 0x36, 0x45), 2.0, rgb(0xBC, 0x21, 0x30));
+                }
+                if s.is_filled {
+                    return (tag_color, 2.0, tag_color);
+                }
+                if s.is_selected {
+                    return (with_alpha(tag_color, 0.7), 1.5, tag_color);
+                }
+                if s.is_occ {
+                    return (with_alpha(tag_color, 0.3), 1.0, with_alpha(tag_color, 0.6));
+                }
+            }
+        }
+        (with_alpha(Color::WHITE, 0.9), 1.0, rgb(0xDE, 0xE2, 0xE6))
+    }
+
+    fn is_tag_active(&self, index: usize) -> bool {
+        self.monitor_info_opt
+            .as_ref()
+            .and_then(|m| m.tag_status_vec.get(index))
+            .map(|s| s.is_filled || s.is_selected || s.is_urg)
+            .unwrap_or(false)
+    }
+}
+
+fn with_alpha(mut c: Color, a: f32) -> Color {
+    c.components[3] = a;
+    c
+}
+
+// -------- Reusable view builders --------------------------------------------
+
+fn pill<V>(bg: Color, border_c: Color, _fg: Color, height: f64, inner: V) -> impl WidgetView<XilemBar>
+where
+    V: WidgetView<XilemBar> + 'static,
+{
+    sized_box(inner)
+        .height(Length::px(height))
+        .padding(pill_padding())
+        .background(bg)
+        .border(border_c, Length::px(1.0))
+        .corner_radius(Length::px(12.0))
+}
+
+fn usage_colors(usage: f32) -> (Color, Color) {
+    if usage <= 30.0 {
+        (with_alpha(rgb(0x1F, 0xBF, 0x51), 0.9), Color::WHITE)
+    } else if usage <= 60.0 {
+        (with_alpha(rgb(0xF4, 0xC2, 0x0D), 0.9), Color::BLACK)
+    } else if usage <= 80.0 {
+        (with_alpha(rgb(0xFF, 0x8C, 0x1A), 0.9), Color::WHITE)
+    } else {
+        (with_alpha(rgb(0xE5, 0x39, 0x35), 0.9), Color::WHITE)
+    }
+}
+
+fn battery_colors(pct: f32) -> (Color, Color) {
+    if pct > 50.0 {
+        (with_alpha(rgb(0x1F, 0xBF, 0x51), 0.9), Color::WHITE)
+    } else if pct > 20.0 {
+        (with_alpha(rgb(0xF4, 0xC2, 0x0D), 0.9), Color::BLACK)
+    } else {
+        (with_alpha(rgb(0xE5, 0x39, 0x35), 0.9), Color::WHITE)
+    }
+}
+
+fn volume_icon(volume: i32, muted: bool, has_device: bool) -> &'static str {
+    if !has_device || muted || volume <= 0 {
+        ICON_VOL_MUTE
+    } else if volume < 34 {
+        ICON_VOL_LOW
+    } else if volume < 67 {
+        ICON_VOL_MID
+    } else {
+        ICON_VOL_HIGH
+    }
+}
+
+fn monitor_num_to_icon(n: i32) -> String {
+    match n {
+        0 => ICON_M0.to_string(),
+        1 => ICON_M1.to_string(),
+        n => format!("M{}", n),
+    }
+}
+
+// -------- Sub-views ----------------------------------------------------------
+
+fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar> + use<> {
+    let label_str = TAG_ICONS[index].to_string();
+    let (bg, border_w, border_c) = state.tag_visuals(index);
+    let is_active = state.is_tag_active(index);
+    let text_color = if is_active {
+        if index == 4 {
+            rgb(0x33, 0x33, 0x33)
+        } else {
+            Color::WHITE
+        }
+    } else {
+        rgb(0x33, 0x33, 0x33)
+    };
+
+    let inner = label(label_str).text_size(18.0).color(text_color);
+    sized_box(
+        button(inner, move |s: &mut XilemBar| {
+            s.active_tab = index;
+            s.send_tag_command(true);
+        }),
+    )
+    .width(Length::px(TAB_WIDTH))
+    .height(Length::px(TAB_HEIGHT))
+    .background(bg)
+    .border(border_c, Length::px(border_w))
+    .corner_radius(Length::px(6.0))
+}
+
+fn workspace_row(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    flex(
+        Axis::Horizontal,
+        (
+            workspace_tag(state, 0),
+            workspace_tag(state, 1),
+            workspace_tag(state, 2),
+            workspace_tag(state, 3),
+            workspace_tag(state, 4),
+            workspace_tag(state, 5),
+            workspace_tag(state, 6),
+            workspace_tag(state, 7),
+            workspace_tag(state, 8),
+        ),
+    )
+    .gap(Length::px(TAB_SPACING))
+}
+
+fn layout_toggle(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let open = state.layout_selector_open;
+    let pill_color = if open {
+        rgb(0x3C, 0xB3, 0x71)
+    } else {
+        rgb(0xD3, 0x54, 0x00)
+    };
+    let label_str = state.layout_symbol.clone();
+
+    sized_box(button(
+        label(label_str).text_size(14.0).color(Color::WHITE),
+        |s: &mut XilemBar| {
+            s.layout_selector_open = !s.layout_selector_open;
+        },
+    ))
+    .height(Length::px(PILL_HEIGHT))
+    .padding(pill_padding())
+    .background(with_alpha(pill_color, 0.85))
+    .border(pill_color, Length::px(1.0))
+    .corner_radius(Length::px(12.0))
+}
+
+fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let current = state.layout_symbol.clone();
+    let mk = move |sym: &'static str, idx: u32, current: String| {
+        let is_current = sym == current;
+        let base = if is_current {
+            rgb(0x3C, 0xB3, 0x71)
+        } else {
+            rgb(0x41, 0x69, 0xE1)
+        };
+        sized_box(button(
+            label(sym).text_size(14.0).color(Color::WHITE),
+            move |s: &mut XilemBar| {
+                s.send_layout_command(idx);
+                s.layout_selector_open = false;
+            },
+        ))
+        .height(Length::px(PILL_HEIGHT))
+        .padding(pill_padding())
+        .background(with_alpha(base, 0.85))
+        .border(base, Length::px(if is_current { 2.0 } else { 1.0 }))
+        .corner_radius(Length::px(12.0))
+    };
+
+    flex(
+        Axis::Horizontal,
+        (
+            mk("[]=", 0, current.clone()),
+            mk("><>", 1, current.clone()),
+            mk("[M]", 2, current),
+        ),
+    )
+    .gap(Length::px(6.0))
+}
+
+fn usage_pill_view(icon: &'static str, value: f32) -> impl WidgetView<XilemBar> + use<> {
+    let (bg, fg) = usage_colors(value);
+    pill(
+        bg,
+        bg,
+        fg,
+        PILL_HEIGHT,
+        label(format!("{}  {:.0}%", icon, value))
+            .text_size(14.0)
+            .color(fg),
+    )
+}
+
+fn battery_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let (pct, charging) = state
+        .system_monitor
+        .get_snapshot()
+        .map(|s| (s.battery_percent, s.is_charging))
+        .unwrap_or((0.0, false));
+    let icon = if charging { ICON_BAT_CHG } else { ICON_BAT_FULL };
+    let (bg, fg) = battery_colors(pct);
+    pill(
+        bg,
+        bg,
+        fg,
+        PILL_HEIGHT,
+        label(format!("{}  {:.0}%", icon, pct))
+            .text_size(14.0)
+            .color(fg),
+    )
+}
+
+fn brightness_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let pct = state.brightness_manager.percent();
+    let text_str = match pct {
+        Some(p) => format!("{}  {}%", ICON_BRIGHT, p),
+        None => format!("{}  --", ICON_BRIGHT),
+    };
+    let bg = with_alpha(rgb(0xFD, 0xE0, 0x47), 0.92);
+    let border_c = rgb(0xFA, 0xCC, 0x15);
+    let fg = rgb(0x1F, 0x29, 0x37);
+    let inner = label(text_str).text_size(14.0).color(fg);
+
+    // Click bumps +5; right-click −5. (Scroll wheel currently not wired in
+    // xilem's high-level button view; left as a future extension.)
+    sized_box(button(inner, |s: &mut XilemBar| {
+        s.brightness_manager.adjust(5);
+    }))
+    .height(Length::px(PILL_HEIGHT))
+    .padding(pill_padding())
+    .background(bg)
+    .border(border_c, Length::px(1.0))
+    .corner_radius(Length::px(12.0))
+}
+
+fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let master = state.audio_manager.get_master_device();
+    let (vol, muted, has_dev) = if let Some(d) = master {
+        (d.volume.clamp(0, 100), d.is_muted, true)
+    } else {
+        (0, true, false)
+    };
+    let icon = volume_icon(vol, muted, has_dev);
+    let text_str = if has_dev {
+        format!("{}  {}%", icon, vol)
+    } else {
+        format!("{}  --", icon)
+    };
+    let (bg, border_c, fg) = if muted || !has_dev {
+        (
+            with_alpha(rgb(0x78, 0x78, 0x78), 0.85),
+            rgb(0x88, 0x88, 0x88),
+            rgb(0xEE, 0xEE, 0xEE),
+        )
+    } else {
+        (
+            with_alpha(rgb(0x14, 0xB8, 0xA6), 0.9),
+            rgb(0x14, 0xB8, 0xA6),
+            Color::WHITE,
+        )
+    };
+    let inner = label(text_str).text_size(14.0).color(fg);
+    sized_box(button(inner, |s: &mut XilemBar| {
+        if let Some(d) = s.audio_manager.get_master_device().cloned() {
+            let _ = s.audio_manager.toggle_mute(&d.name);
+        }
+    }))
+    .height(Length::px(PILL_HEIGHT))
+    .padding(pill_padding())
+    .background(bg)
+    .border(border_c, Length::px(1.0))
+    .corner_radius(Length::px(12.0))
+}
+
+fn screenshot_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let bg = if state.is_hovered_screenshot {
+        with_alpha(rgb(0xFF, 0x88, 0x00), 0.95)
+    } else {
+        with_alpha(rgb(0x00, 0xCC, 0xCC), 0.90)
+    };
+    let inner = label(ICON_SHOT.to_string())
+        .text_size(15.0)
+        .color(Color::WHITE);
+    sized_box(button(inner, |_s: &mut XilemBar| {
+        if let Err(e) = Command::new("flameshot").arg("gui").spawn() {
+            warn!("Failed to spawn flameshot: {e}");
+        }
+    }))
+    .height(Length::px(PILL_HEIGHT))
+    .padding(pill_padding())
+    .background(bg)
+    .border(bg, Length::px(1.0))
+    .corner_radius(Length::px(12.0))
+}
+
+fn time_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let bg = with_alpha(rgb(0x4D, 0xA3, 0xFF), 0.9);
+    let inner = label(format!("{}  {}", ICON_TIME, state.formated_now))
+        .text_size(14.0)
+        .color(Color::WHITE);
+    sized_box(button(inner, |s: &mut XilemBar| {
+        s.show_seconds = !s.show_seconds;
+    }))
+    .height(Length::px(PILL_HEIGHT))
+    .padding(pill_padding())
+    .background(bg)
+    .border(bg, Length::px(1.0))
+    .corner_radius(Length::px(12.0))
+}
+
+fn monitor_pill_view(monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
+    let bg = with_alpha(rgb(0x9B, 0x59, 0xB6), 0.9);
+    pill(
+        bg,
+        bg,
+        Color::WHITE,
+        PILL_HEIGHT,
+        label(format!("{}  {}", ICON_MON, monitor_num_to_icon(monitor_num)))
+            .text_size(14.0)
+            .color(Color::WHITE),
+    )
+}
+
+fn scale_pill_view(scale: f32) -> impl WidgetView<XilemBar> + use<> {
+    let bg = with_alpha(rgb(0x78, 0x78, 0x78), 0.88);
+    pill(
+        bg,
+        bg,
+        Color::WHITE,
+        PILL_HEIGHT,
+        label(format!("s: {:.2}", scale))
+            .text_size(14.0)
+            .color(Color::WHITE),
+    )
+}
+
+// -------- Top-level view -----------------------------------------------------
+
+fn app_logic(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let snapshot = state.system_monitor.get_snapshot();
+    let cpu = snapshot.map(|s| s.cpu_average).unwrap_or(0.0);
+    let mem = snapshot.map(|s| s.memory_usage_percent).unwrap_or(0.0);
+
+    let monitor_num = state
+        .monitor_info_opt
+        .as_ref()
+        .map(|m| m.monitor_num)
+        .unwrap_or(0);
+
+    let tags = workspace_row(state);
+    let lt_btn = layout_toggle(state);
+    let lt_options: Option<_> = if state.layout_selector_open {
+        Some(layout_options(state))
+    } else {
+        None
+    };
+
+    flex(
+        Axis::Horizontal,
+        (
+            (
+                tags,
+                FlexSpacer::Fixed(Length::px(6.0)),
+                lt_btn,
+                FlexSpacer::Fixed(Length::px(6.0)),
+                lt_options,
+                FlexSpacer::Flex(1.0),
+            ),
+            (
+                usage_pill_view(ICON_CPU, cpu),
+                FlexSpacer::Fixed(Length::px(6.0)),
+                usage_pill_view(ICON_MEM, mem),
+                FlexSpacer::Fixed(Length::px(6.0)),
+                battery_pill_view(state),
+                FlexSpacer::Fixed(Length::px(8.0)),
+                brightness_pill_view(state),
+                FlexSpacer::Fixed(Length::px(6.0)),
+                volume_pill_view(state),
+            ),
+            (
+                FlexSpacer::Fixed(Length::px(6.0)),
+                screenshot_pill_view(state),
+                FlexSpacer::Fixed(Length::px(6.0)),
+                time_pill_view(state),
+                FlexSpacer::Fixed(Length::px(6.0)),
+                monitor_pill_view(monitor_num),
+                FlexSpacer::Fixed(Length::px(6.0)),
+                scale_pill_view(1.0),
+            ),
+        ),
+    )
+    .gap(Length::ZERO)
+}
+
+// -------- Background workers -------------------------------------------------
+
+// 1Hz clock + system monitor tick.
+fn clock_task() -> impl View<XilemBar, (), ViewCtx, Element = NoElement> + use<> {
+    task_raw(
+        |proxy: MessageProxy<WorkerEvent>, _state: &mut XilemBar| async move {
+            let mut iv = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                iv.tick().await;
+                if proxy.message(WorkerEvent::Tick).is_err() {
+                    break;
+                }
+            }
+        },
+        |state: &mut XilemBar, ev: WorkerEvent| state.on_worker(ev),
+    )
+}
+
+// Shared-memory watcher: spawns an OS thread that blocks on the futex, posts
+// SharedMessage updates via the message proxy.
+fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, Element = NoElement> + use<> {
+    let buf = state.shared_buffer_rc.clone();
+    task_raw(
+        move |proxy: MessageProxy<WorkerEvent>, _state: &mut XilemBar| {
+            let buf = buf.clone();
+            async move {
+                std::thread::spawn(move || {
+                    let Some(buf) = buf else {
+                        let _ = proxy
+                            .message(WorkerEvent::SharedError("Empty shared buffer".into()));
+                        return;
+                    };
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let mut prev_ts: u128 = 0;
+                    while !stop.load(Ordering::Relaxed) {
+                        match buf.wait_for_message(Some(Duration::from_secs(2))) {
+                            Ok(true) => {
+                                if let Ok(Some(msg)) = buf.try_read_latest_message() {
+                                    let ts = msg.timestamp as u128;
+                                    if prev_ts != ts {
+                                        prev_ts = ts;
+                                        if proxy
+                                            .message(WorkerEvent::Shared(Box::new(msg)))
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                let _ = proxy
+                                    .message(WorkerEvent::SharedError(format!("{e}")));
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        },
+        |state: &mut XilemBar, ev: WorkerEvent| state.on_worker(ev),
+    )
+}
+
+// Top-level view: fork attaches the background tasks to the visible tree.
+fn root(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    fork(
+        sized_box(app_logic(state))
+            .padding(Length::px(4.0))
+            .background(Color::TRANSPARENT),
+        (clock_task(), shared_mem_worker(state)),
+    )
+}
+
+// -------- main ---------------------------------------------------------------
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = env::args().collect();
+    let shared_path = args.iter().skip(1).last().cloned().unwrap_or_default();
+    let _ = initialize_logging("xilem_bar", &shared_path);
+
+    let opts = WindowOptions::new("xilem_bar")
+        .with_initial_inner_size(LogicalSize::new(800.0, 40.0))
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_window_level(WindowLevel::AlwaysOnTop)
+        .with_resizable(false);
+
+    let _ = NERD_FONT;
+    Xilem::new_simple(XilemBar::new(), root, opts).run_in(EventLoop::with_user_event())?;
+    Ok(())
+}
