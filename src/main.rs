@@ -63,16 +63,18 @@ const ICON_MON: &str = "\u{F0379}";
 const ICON_M0: &str = "\u{F02DA}";
 const ICON_M1: &str = "\u{F02DB}";
 
-const TAB_WIDTH: f64 = 38.0;
-const TAB_HEIGHT: f64 = 32.0;
-const TAB_SPACING: f64 = 4.0;
-const PILL_HEIGHT: f64 = 26.0;
+const TAB_WIDTH: f64 = 18.0;
+const TAB_HEIGHT: f64 = 16.0;
+const TAB_SPACING: f64 = 1.0;
+const PILL_HEIGHT: f64 = 14.0;
+const TAB_FONT_SIZE: f32 = 10.0;
+const PILL_FONT_SIZE: f32 = 9.0;
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }
 fn pill_padding() -> Padding {
-    Padding::from_vh(Length::px(3.0), Length::px(10.0))
+    Padding::from_vh(Length::px(0.0), Length::px(4.0))
 }
 fn rgba(r: u8, g: u8, b: u8, a: f32) -> Color {
     let mut c = Color::from_rgb8(r, g, b);
@@ -232,11 +234,15 @@ impl XilemBar {
                     return (with_alpha(tag_color, 0.7), 1.5, tag_color);
                 }
                 if s.is_occ {
-                    return (with_alpha(tag_color, 0.3), 1.0, with_alpha(tag_color, 0.6));
+                    return (with_alpha(tag_color, 0.35), 1.0, with_alpha(tag_color, 0.7));
                 }
             }
         }
-        (with_alpha(Color::WHITE, 0.9), 1.0, rgb(0xDE, 0xE2, 0xE6))
+        (
+            with_alpha(rgb(0x40, 0x44, 0x5C), 0.5),
+            1.0,
+            with_alpha(tag_color, 0.55),
+        )
     }
 
     fn is_tag_active(&self, index: usize) -> bool {
@@ -264,7 +270,7 @@ where
         .padding(pill_padding())
         .background(bg)
         .border(border_c, Length::px(1.0))
-        .corner_radius(Length::px(12.0))
+        .corner_radius(Length::px(5.0))
 }
 
 fn usage_colors(usage: f32) -> (Color, Color) {
@@ -317,15 +323,15 @@ fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar
     let is_active = state.is_tag_active(index);
     let text_color = if is_active {
         if index == 4 {
-            rgb(0x33, 0x33, 0x33)
+            rgb(0x1E, 0x20, 0x32)
         } else {
             Color::WHITE
         }
     } else {
-        rgb(0x33, 0x33, 0x33)
+        rgb(0xCD, 0xD6, 0xF4)
     };
 
-    let inner = label(label_str).text_size(18.0).color(text_color);
+    let inner = label(label_str).text_size(TAB_FONT_SIZE).color(text_color);
     sized_box(
         button(inner, move |s: &mut XilemBar| {
             s.active_tab = index;
@@ -336,7 +342,7 @@ fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar
     .height(Length::px(TAB_HEIGHT))
     .background(bg)
     .border(border_c, Length::px(border_w))
-    .corner_radius(Length::px(6.0))
+    .corner_radius(Length::px(3.0))
 }
 
 fn workspace_row(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -367,7 +373,7 @@ fn layout_toggle(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let label_str = state.layout_symbol.clone();
 
     sized_box(button(
-        label(label_str).text_size(14.0).color(Color::WHITE),
+        label(label_str).text_size(PILL_FONT_SIZE).color(Color::WHITE),
         |s: &mut XilemBar| {
             s.layout_selector_open = !s.layout_selector_open;
         },
@@ -376,7 +382,7 @@ fn layout_toggle(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .padding(pill_padding())
     .background(with_alpha(pill_color, 0.85))
     .border(pill_color, Length::px(1.0))
-    .corner_radius(Length::px(12.0))
+    .corner_radius(Length::px(5.0))
 }
 
 fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -389,7 +395,7 @@ fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
             rgb(0x41, 0x69, 0xE1)
         };
         sized_box(button(
-            label(sym).text_size(14.0).color(Color::WHITE),
+            label(sym).text_size(PILL_FONT_SIZE).color(Color::WHITE),
             move |s: &mut XilemBar| {
                 s.send_layout_command(idx);
                 s.layout_selector_open = false;
@@ -399,7 +405,7 @@ fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
         .padding(pill_padding())
         .background(with_alpha(base, 0.85))
         .border(base, Length::px(if is_current { 2.0 } else { 1.0 }))
-        .corner_radius(Length::px(12.0))
+        .corner_radius(Length::px(5.0))
     };
 
     flex(
@@ -421,7 +427,7 @@ fn usage_pill_view(icon: &'static str, value: f32) -> impl WidgetView<XilemBar> 
         fg,
         PILL_HEIGHT,
         label(format!("{}  {:.0}%", icon, value))
-            .text_size(14.0)
+            .text_size(PILL_FONT_SIZE)
             .color(fg),
     )
 }
@@ -440,7 +446,7 @@ fn battery_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         fg,
         PILL_HEIGHT,
         label(format!("{}  {:.0}%", icon, pct))
-            .text_size(14.0)
+            .text_size(PILL_FONT_SIZE)
             .color(fg),
     )
 }
@@ -454,7 +460,7 @@ fn brightness_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let bg = with_alpha(rgb(0xFD, 0xE0, 0x47), 0.92);
     let border_c = rgb(0xFA, 0xCC, 0x15);
     let fg = rgb(0x1F, 0x29, 0x37);
-    let inner = label(text_str).text_size(14.0).color(fg);
+    let inner = label(text_str).text_size(PILL_FONT_SIZE).color(fg);
 
     // Click bumps +5; right-click −5. (Scroll wheel currently not wired in
     // xilem's high-level button view; left as a future extension.)
@@ -465,7 +471,7 @@ fn brightness_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .padding(pill_padding())
     .background(bg)
     .border(border_c, Length::px(1.0))
-    .corner_radius(Length::px(12.0))
+    .corner_radius(Length::px(5.0))
 }
 
 fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -494,7 +500,7 @@ fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
             Color::WHITE,
         )
     };
-    let inner = label(text_str).text_size(14.0).color(fg);
+    let inner = label(text_str).text_size(PILL_FONT_SIZE).color(fg);
     sized_box(button(inner, |s: &mut XilemBar| {
         if let Some(d) = s.audio_manager.get_master_device().cloned() {
             let _ = s.audio_manager.toggle_mute(&d.name);
@@ -504,7 +510,7 @@ fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .padding(pill_padding())
     .background(bg)
     .border(border_c, Length::px(1.0))
-    .corner_radius(Length::px(12.0))
+    .corner_radius(Length::px(5.0))
 }
 
 fn screenshot_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -514,7 +520,7 @@ fn screenshot_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         with_alpha(rgb(0x00, 0xCC, 0xCC), 0.90)
     };
     let inner = label(ICON_SHOT.to_string())
-        .text_size(15.0)
+        .text_size(PILL_FONT_SIZE)
         .color(Color::WHITE);
     sized_box(button(inner, |_s: &mut XilemBar| {
         if let Err(e) = Command::new("flameshot").arg("gui").spawn() {
@@ -525,13 +531,13 @@ fn screenshot_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .padding(pill_padding())
     .background(bg)
     .border(bg, Length::px(1.0))
-    .corner_radius(Length::px(12.0))
+    .corner_radius(Length::px(5.0))
 }
 
 fn time_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let bg = with_alpha(rgb(0x4D, 0xA3, 0xFF), 0.9);
     let inner = label(format!("{}  {}", ICON_TIME, state.formated_now))
-        .text_size(14.0)
+        .text_size(PILL_FONT_SIZE)
         .color(Color::WHITE);
     sized_box(button(inner, |s: &mut XilemBar| {
         s.show_seconds = !s.show_seconds;
@@ -540,7 +546,7 @@ fn time_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .padding(pill_padding())
     .background(bg)
     .border(bg, Length::px(1.0))
-    .corner_radius(Length::px(12.0))
+    .corner_radius(Length::px(5.0))
 }
 
 fn monitor_pill_view(monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
@@ -551,7 +557,7 @@ fn monitor_pill_view(monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
         Color::WHITE,
         PILL_HEIGHT,
         label(format!("{}  {}", ICON_MON, monitor_num_to_icon(monitor_num)))
-            .text_size(14.0)
+            .text_size(PILL_FONT_SIZE)
             .color(Color::WHITE),
     )
 }
@@ -564,7 +570,7 @@ fn scale_pill_view(scale: f32) -> impl WidgetView<XilemBar> + use<> {
         Color::WHITE,
         PILL_HEIGHT,
         label(format!("s: {:.2}", scale))
-            .text_size(14.0)
+            .text_size(PILL_FONT_SIZE)
             .color(Color::WHITE),
     )
 }
@@ -595,31 +601,31 @@ fn app_logic(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
         (
             (
                 tags,
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 lt_btn,
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 lt_options,
                 FlexSpacer::Flex(1.0),
             ),
             (
                 usage_pill_view(ICON_CPU, cpu),
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 usage_pill_view(ICON_MEM, mem),
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 battery_pill_view(state),
-                FlexSpacer::Fixed(Length::px(8.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 brightness_pill_view(state),
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 volume_pill_view(state),
             ),
             (
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 screenshot_pill_view(state),
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 time_pill_view(state),
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 monitor_pill_view(monitor_num),
-                FlexSpacer::Fixed(Length::px(6.0)),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 scale_pill_view(1.0),
             ),
         ),
@@ -696,8 +702,8 @@ fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, E
 fn root(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     fork(
         sized_box(app_logic(state))
-            .padding(Length::px(4.0))
-            .background(Color::TRANSPARENT),
+            .padding(Padding::from_vh(Length::px(2.0), Length::px(6.0)))
+            .background(with_alpha(rgb(0x1E, 0x20, 0x32), 0.92)),
         (clock_task(), shared_mem_worker(state)),
     )
 }
@@ -710,7 +716,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = initialize_logging("xilem_bar", &shared_path);
 
     let opts = WindowOptions::new("xilem_bar")
-        .with_initial_inner_size(LogicalSize::new(800.0, 40.0))
+        .with_initial_inner_size(LogicalSize::new(800.0, 22.0))
         .with_decorations(false)
         .with_transparent(true)
         .with_window_level(WindowLevel::AlwaysOnTop)
