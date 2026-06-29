@@ -700,7 +700,7 @@ fn root(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     fork(
         sized_box(app_logic(state))
             .padding(Padding::from_vh(Length::px(0.0), Length::px(6.0)))
-            .background(with_alpha(rgb(0x1E, 0x20, 0x32), 0.92)),
+            .background(with_alpha(rgb(0x1E, 0x20, 0x32), 0.5)),
         (clock_task(), shared_mem_worker(state)),
     )
 }
