@@ -322,11 +322,7 @@ fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar
     let (bg, border_w, border_c) = state.tag_visuals(index);
     let is_active = state.is_tag_active(index);
     let text_color = if is_active {
-        if index == 4 {
-            rgb(0x1E, 0x20, 0x32)
-        } else {
-            Color::WHITE
-        }
+        Color::WHITE
     } else {
         rgb(0xCD, 0xD6, 0xF4)
     };
