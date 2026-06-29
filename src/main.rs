@@ -29,15 +29,16 @@ use xbar_core::initialize_logging;
 use xbar_core::system_monitor::SystemMonitor;
 
 use masonry::kurbo::Axis;
-use masonry::layout::Length;
+use masonry::layout::{Dim, Length};
 use masonry::peniko::Color;
-use masonry::properties::Padding;
+use masonry::properties::{Dimensions, Padding};
 use winit::dpi::LogicalSize;
 use winit::window::WindowLevel;
 use xilem::core::{MessageProxy, NoElement, View, fork};
 use xilem::style::Style;
 use xilem::view::{
-    FlexSpacer, PointerButton, button, button_any_pointer, flex, label, sized_box, task_raw,
+    CrossAxisAlignment, FlexSpacer, PointerButton, button, button_any_pointer, flex, label,
+    sized_box, task_raw,
 };
 use xilem::{EventLoop, ViewCtx, WidgetView, WindowOptions, Xilem};
 
@@ -65,12 +66,10 @@ const ICON_MON: &str = "\u{F0379}";
 const ICON_M0: &str = "\u{F02DA}";
 const ICON_M1: &str = "\u{F02DB}";
 
-const TAB_WIDTH: f64 = 18.0;
-const TAB_HEIGHT: f64 = 16.0;
-const TAB_SPACING: f64 = 1.0;
-const PILL_HEIGHT: f64 = 14.0;
-const TAB_FONT_SIZE: f32 = 10.0;
-const PILL_FONT_SIZE: f32 = 9.0;
+const TAB_WIDTH: f64 = 38.0;
+const TAB_SPACING: f64 = 4.0;
+const TAB_FONT_SIZE: f32 = 12.0;
+const PILL_FONT_SIZE: f32 = 11.0;
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
@@ -231,9 +230,9 @@ impl XilemBar {
             }
         }
         (
-            with_alpha(rgb(0x40, 0x44, 0x5C), 0.5),
+            with_alpha(rgb(0x45, 0x47, 0x5A), 0.85),
             1.0,
-            with_alpha(tag_color, 0.55),
+            with_alpha(tag_color, 0.9),
         )
     }
 
@@ -258,8 +257,8 @@ where
     V: WidgetView<XilemBar> + 'static,
 {
     sized_box(inner)
-        .height(Length::px(PILL_HEIGHT))
         .padding(pill_padding())
+        .height(Dim::Stretch)
 }
 
 // Catppuccin Mocha accent colors for flat indicators.
@@ -339,8 +338,10 @@ fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar
             s.send_tag_command(true);
         }),
     )
-    .width(Length::px(TAB_WIDTH))
-    .height(Length::px(TAB_HEIGHT))
+    .dims(Dimensions::new(
+        Dim::Fixed(Length::px(TAB_WIDTH)),
+        Dim::Stretch,
+    ))
     .background(bg)
     .border(border_c, Length::px(border_w))
     .corner_radius(Length::px(3.0))
@@ -361,6 +362,7 @@ fn workspace_row(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
             workspace_tag(state, 8),
         ),
     )
+    .cross_axis_alignment(CrossAxisAlignment::Stretch)
     .gap(Length::px(TAB_SPACING))
 }
 
@@ -399,6 +401,7 @@ fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
             mk("[M]", 2, current),
         ),
     )
+    .cross_axis_alignment(CrossAxisAlignment::Stretch)
     .gap(Length::px(4.0))
 }
 
@@ -560,9 +563,12 @@ fn monitor_pill_view(monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
 }
 
 fn scale_pill_view(scale: f32) -> impl WidgetView<XilemBar> + use<> {
-    flat(label(format!("s: {:.2}", scale))
-        .text_size(PILL_FONT_SIZE)
-        .color(ACCENT_SUBTLE))
+    flat(flex(
+        Axis::Horizontal,
+        label(format!("s: {:.2}", scale))
+            .text_size(PILL_FONT_SIZE)
+            .color(ACCENT_SUBTLE),
+    ))
 }
 
 // -------- Top-level view -----------------------------------------------------
@@ -620,6 +626,7 @@ fn app_logic(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
             ),
         ),
     )
+    .cross_axis_alignment(CrossAxisAlignment::Stretch)
     .gap(Length::ZERO)
 }
 
@@ -692,7 +699,7 @@ fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, E
 fn root(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     fork(
         sized_box(app_logic(state))
-            .padding(Padding::from_vh(Length::px(2.0), Length::px(6.0)))
+            .padding(Padding::from_vh(Length::px(0.0), Length::px(6.0)))
             .background(with_alpha(rgb(0x1E, 0x20, 0x32), 0.92)),
         (clock_task(), shared_mem_worker(state)),
     )
@@ -706,7 +713,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = initialize_logging("xilem_bar", &shared_path);
 
     let opts = WindowOptions::new("xilem_bar")
-        .with_initial_inner_size(LogicalSize::new(800.0, 22.0))
+        .with_initial_inner_size(LogicalSize::new(800.0, 26.0))
         .with_decorations(false)
         .with_transparent(true)
         .with_window_level(WindowLevel::AlwaysOnTop)
