@@ -49,8 +49,15 @@ use xilem::{EventLoop, ViewCtx, WidgetView, WindowOptions, Xilem};
 const NERD_FONT: &str = "JetBrainsMono Nerd Font";
 
 const TAG_ICONS: [&str; 9] = [
-    "\u{F0A1E}", "\u{F0239}", "\u{F0A1B}", "\u{F0B79}", "\u{F024B}", "\u{F0388}", "\u{F0567}",
-    "\u{F01F0}", "\u{F0297}",
+    "\u{F0A1E}",
+    "\u{F0239}",
+    "\u{F0A1B}",
+    "\u{F0B79}",
+    "\u{F024B}",
+    "\u{F0388}",
+    "\u{F0567}",
+    "\u{F01F0}",
+    "\u{F0297}",
 ];
 
 const ICON_CPU: &str = "\u{F0FB1}";
@@ -85,8 +92,8 @@ fn pill_padding() -> Padding {
 
 #[derive(Debug, Clone)]
 enum WorkerEvent {
-    Tick,                                  // 1Hz clock tick
-    Shared(Box<SharedMessage>),            // shared-memory update
+    Tick,                       // 1Hz clock tick
+    Shared(Box<SharedMessage>), // shared-memory update
     SharedError(String),
 }
 
@@ -228,10 +235,7 @@ impl XilemBar {
     // -------- View helpers -----------------------------------------------------
 
     fn tag_visuals(&self, index: usize) -> (Color, f64, Color) {
-        let tag_color = *self
-            .tab_colors
-            .get(index)
-            .unwrap_or(&rgb(0x66, 0x66, 0x66));
+        let tag_color = *self.tab_colors.get(index).unwrap_or(&rgb(0x66, 0x66, 0x66));
         if let Some(monitor) = &self.monitor_info_opt {
             if let Some(s) = monitor.tag_status_vec.get(index) {
                 if s.is_urg {
@@ -248,11 +252,7 @@ impl XilemBar {
                 }
             }
         }
-        (
-            self.theme.tag_inactive_bg,
-            1.0,
-            with_alpha(tag_color, 0.9),
-        )
+        (self.theme.tag_inactive_bg, 1.0, with_alpha(tag_color, 0.9))
     }
 
     fn is_tag_active(&self, index: usize) -> bool {
@@ -444,12 +444,10 @@ fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar
     };
 
     let inner = label(label_str).text_size(TAB_FONT_SIZE).color(text_color);
-    sized_box(
-        button(inner, move |s: &mut XilemBar| {
-            s.active_tab = index;
-            s.send_tag_command(true);
-        }),
-    )
+    sized_box(button(inner, move |s: &mut XilemBar| {
+        s.active_tab = index;
+        s.send_tag_command(true);
+    }))
     .dims(Dimensions::new(
         Dim::Fixed(Length::px(TAB_WIDTH)),
         Dim::Stretch,
@@ -480,7 +478,11 @@ fn workspace_row(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
 
 fn layout_toggle(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let open = state.layout_selector_open;
-    let fg = if open { state.theme.green } else { state.theme.orange };
+    let fg = if open {
+        state.theme.green
+    } else {
+        state.theme.orange
+    };
     let label_str = state.layout_symbol.clone();
 
     flat(button(
@@ -518,21 +520,27 @@ fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .gap(Length::px(4.0))
 }
 
-fn usage_pill_view(theme: &Theme, icon: &'static str, value: f32) -> impl WidgetView<XilemBar> + use<> {
+fn usage_pill_view(
+    theme: &Theme,
+    icon: &'static str,
+    value: f32,
+) -> impl WidgetView<XilemBar> + use<> {
     let accent = usage_color(theme, value);
     let fg = theme.fg;
-    flat(flex(
-        Axis::Horizontal,
-        (
-            label(icon.to_string())
-                .text_size(PILL_FONT_SIZE)
-                .color(accent),
-            label(format!("{:.0}%", value))
-                .text_size(PILL_FONT_SIZE)
-                .color(fg),
-        ),
+    flat(
+        flex(
+            Axis::Horizontal,
+            (
+                label(icon.to_string())
+                    .text_size(PILL_FONT_SIZE)
+                    .color(accent),
+                label(format!("{:.0}%", value))
+                    .text_size(PILL_FONT_SIZE)
+                    .color(fg),
+            ),
+        )
+        .gap(Length::px(3.0)),
     )
-    .gap(Length::px(3.0)))
 }
 
 fn battery_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -541,21 +549,27 @@ fn battery_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         .get_snapshot()
         .map(|s| (s.battery_percent, s.is_charging))
         .unwrap_or((0.0, false));
-    let icon = if charging { ICON_BAT_CHG } else { ICON_BAT_FULL };
+    let icon = if charging {
+        ICON_BAT_CHG
+    } else {
+        ICON_BAT_FULL
+    };
     let accent = battery_color(&state.theme, pct);
     let fg = state.theme.fg;
-    flat(flex(
-        Axis::Horizontal,
-        (
-            label(icon.to_string())
-                .text_size(PILL_FONT_SIZE)
-                .color(accent),
-            label(format!("{:.0}%", pct))
-                .text_size(PILL_FONT_SIZE)
-                .color(fg),
-        ),
+    flat(
+        flex(
+            Axis::Horizontal,
+            (
+                label(icon.to_string())
+                    .text_size(PILL_FONT_SIZE)
+                    .color(accent),
+                label(format!("{:.0}%", pct))
+                    .text_size(PILL_FONT_SIZE)
+                    .color(fg),
+            ),
+        )
+        .gap(Length::px(3.0)),
     )
-    .gap(Length::px(3.0)))
 }
 
 fn brightness_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -578,14 +592,17 @@ fn brightness_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     )
     .gap(Length::px(3.0));
 
-    flat(button_any_pointer(inner, |s: &mut XilemBar, btn: Option<PointerButton>| {
-        let delta = if matches!(btn, Some(PointerButton::Secondary)) {
-            -10
-        } else {
-            10
-        };
-        let _ = s.brightness_manager.adjust(delta);
-    }))
+    flat(button_any_pointer(
+        inner,
+        |s: &mut XilemBar, btn: Option<PointerButton>| {
+            let delta = if matches!(btn, Some(PointerButton::Secondary)) {
+                -10
+            } else {
+                10
+            };
+            let _ = s.brightness_manager.adjust(delta);
+        },
+    ))
 }
 
 fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -618,22 +635,25 @@ fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     )
     .gap(Length::px(3.0));
     // Left-click +5, right-click −5, middle-click toggles mute.
-    flat(button_any_pointer(inner, |s: &mut XilemBar, btn: Option<PointerButton>| {
-        let Some(d) = s.audio_manager.get_master_device().cloned() else {
-            return;
-        };
-        match btn {
-            Some(PointerButton::Secondary) => {
-                let _ = s.audio_manager.adjust_volume(&d.name, -5);
+    flat(button_any_pointer(
+        inner,
+        |s: &mut XilemBar, btn: Option<PointerButton>| {
+            let Some(d) = s.audio_manager.get_master_device().cloned() else {
+                return;
+            };
+            match btn {
+                Some(PointerButton::Secondary) => {
+                    let _ = s.audio_manager.adjust_volume(&d.name, -5);
+                }
+                Some(PointerButton::Auxiliary) => {
+                    let _ = s.audio_manager.toggle_mute(&d.name);
+                }
+                _ => {
+                    let _ = s.audio_manager.adjust_volume(&d.name, 5);
+                }
             }
-            Some(PointerButton::Auxiliary) => {
-                let _ = s.audio_manager.toggle_mute(&d.name);
-            }
-            _ => {
-                let _ = s.audio_manager.adjust_volume(&d.name, 5);
-            }
-        }
-    }))
+        },
+    ))
 }
 
 fn screenshot_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
@@ -654,7 +674,9 @@ fn theme_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         ThemeMode::Light => (ICON_MOON, state.theme.mauve),
     };
     flat(button(
-        label(icon.to_string()).text_size(PILL_FONT_SIZE).color(accent),
+        label(icon.to_string())
+            .text_size(PILL_FONT_SIZE)
+            .color(accent),
         |s: &mut XilemBar| s.toggle_theme(),
     ))
 }
@@ -682,18 +704,20 @@ fn time_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
 fn monitor_pill_view(theme: &Theme, monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
     let accent = theme.mauve;
     let fg = theme.fg;
-    flat(flex(
-        Axis::Horizontal,
-        (
-            label(ICON_MON.to_string())
-                .text_size(PILL_FONT_SIZE)
-                .color(accent),
-            label(monitor_num_to_icon(monitor_num))
-                .text_size(PILL_FONT_SIZE)
-                .color(fg),
-        ),
+    flat(
+        flex(
+            Axis::Horizontal,
+            (
+                label(ICON_MON.to_string())
+                    .text_size(PILL_FONT_SIZE)
+                    .color(accent),
+                label(monitor_num_to_icon(monitor_num))
+                    .text_size(PILL_FONT_SIZE)
+                    .color(fg),
+            ),
+        )
+        .gap(Length::px(3.0)),
     )
-    .gap(Length::px(3.0)))
 }
 
 fn scale_pill_view(theme: &Theme, scale: f32) -> impl WidgetView<XilemBar> + use<> {
@@ -787,7 +811,9 @@ fn clock_task() -> impl View<XilemBar, (), ViewCtx, Element = NoElement> + use<>
 
 // Shared-memory watcher: spawns an OS thread that blocks on the futex, posts
 // SharedMessage updates via the message proxy.
-fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, Element = NoElement> + use<> {
+fn shared_mem_worker(
+    state: &mut XilemBar,
+) -> impl View<XilemBar, (), ViewCtx, Element = NoElement> + use<> {
     let buf = state.shared_buffer_rc.clone();
     task_raw(
         move |proxy: MessageProxy<WorkerEvent>, _state: &mut XilemBar| {
@@ -795,8 +821,8 @@ fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, E
             async move {
                 std::thread::spawn(move || {
                     let Some(buf) = buf else {
-                        let _ = proxy
-                            .message(WorkerEvent::SharedError("Empty shared buffer".into()));
+                        let _ =
+                            proxy.message(WorkerEvent::SharedError("Empty shared buffer".into()));
                         return;
                     };
                     let stop = Arc::new(AtomicBool::new(false));
@@ -819,8 +845,7 @@ fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, E
                             }
                             Ok(false) => {}
                             Err(e) => {
-                                let _ = proxy
-                                    .message(WorkerEvent::SharedError(format!("{e}")));
+                                let _ = proxy.message(WorkerEvent::SharedError(format!("{e}")));
                                 break;
                             }
                         }
