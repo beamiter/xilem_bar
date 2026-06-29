@@ -720,6 +720,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_resizable(false);
 
     let _ = NERD_FONT;
-    Xilem::new_simple(XilemBar::new(), root, opts).run_in(EventLoop::with_user_event())?;
+    Xilem::new_simple(XilemBar::new(), root, opts)
+        .with_default_base_color(Color::TRANSPARENT)
+        .run_in(EventLoop::with_user_event())?;
     Ok(())
 }
