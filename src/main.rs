@@ -14,6 +14,8 @@
 // xilem's `worker` view drains.
 
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +67,8 @@ const ICON_TIME: &str = "\u{F0954}";
 const ICON_MON: &str = "\u{F0379}";
 const ICON_M0: &str = "\u{F02DA}";
 const ICON_M1: &str = "\u{F02DB}";
+const ICON_SUN: &str = "\u{F0599}";
+const ICON_MOON: &str = "\u{F0594}";
 
 const TAB_WIDTH: f64 = 38.0;
 const TAB_SPACING: f64 = 4.0;
@@ -102,6 +106,9 @@ struct XilemBar {
     system_monitor: SystemMonitor,
     brightness_manager: BrightnessManager,
 
+    theme_mode: ThemeMode,
+    theme: Theme,
+
     last_clock_update: Instant,
     last_monitor_update: Instant,
 }
@@ -120,6 +127,7 @@ impl XilemBar {
         let shared_buffer_rc =
             SharedRingBuffer::create_shared_ring_buffer_aux(&shared_path).map(Arc::new);
 
+        let theme_mode = load_theme_mode();
         Self {
             active_tab: 0,
             tab_colors: [
@@ -143,9 +151,20 @@ impl XilemBar {
             audio_manager: AudioManager::new(),
             system_monitor: SystemMonitor::new(5),
             brightness_manager: BrightnessManager::new(),
+            theme_mode,
+            theme: Theme::from_mode(theme_mode),
             last_clock_update: Instant::now(),
             last_monitor_update: Instant::now(),
         }
+    }
+
+    fn toggle_theme(&mut self) {
+        self.theme_mode = match self.theme_mode {
+            ThemeMode::Dark => ThemeMode::Light,
+            ThemeMode::Light => ThemeMode::Dark,
+        };
+        self.theme = Theme::from_mode(self.theme_mode);
+        save_theme_mode(self.theme_mode);
     }
 
     fn send_tag_command(&mut self, is_view: bool) {
@@ -216,7 +235,7 @@ impl XilemBar {
         if let Some(monitor) = &self.monitor_info_opt {
             if let Some(s) = monitor.tag_status_vec.get(index) {
                 if s.is_urg {
-                    return (rgb(0xDB, 0x36, 0x45), 2.0, rgb(0xBC, 0x21, 0x30));
+                    return (self.theme.urgent_bg, 2.0, self.theme.urgent_border);
                 }
                 if s.is_filled {
                     return (tag_color, 2.0, tag_color);
@@ -230,7 +249,7 @@ impl XilemBar {
             }
         }
         (
-            with_alpha(rgb(0x45, 0x47, 0x5A), 0.85),
+            self.theme.tag_inactive_bg,
             1.0,
             with_alpha(tag_color, 0.9),
         )
@@ -261,37 +280,134 @@ where
         .height(Dim::Stretch)
 }
 
-// Catppuccin Mocha accent colors for flat indicators.
-const FG_DEFAULT: Color = Color::from_rgba8(0xCD, 0xD6, 0xF4, 255);
-const ACCENT_GREEN: Color = Color::from_rgba8(0xA6, 0xE3, 0xA1, 255);
-const ACCENT_YELLOW: Color = Color::from_rgba8(0xF9, 0xE2, 0xAF, 255);
-const ACCENT_ORANGE: Color = Color::from_rgba8(0xFA, 0xB3, 0x87, 255);
-const ACCENT_RED: Color = Color::from_rgba8(0xF3, 0x8B, 0xA8, 255);
-const ACCENT_TEAL: Color = Color::from_rgba8(0x94, 0xE2, 0xD5, 255);
-const ACCENT_BLUE: Color = Color::from_rgba8(0x89, 0xB4, 0xFA, 255);
-const ACCENT_MAUVE: Color = Color::from_rgba8(0xCB, 0xA6, 0xF7, 255);
-const ACCENT_PINK: Color = Color::from_rgba8(0xF5, 0xC2, 0xE7, 255);
-const ACCENT_SUBTLE: Color = Color::from_rgba8(0x9C, 0xA0, 0xB0, 255);
+// Catppuccin Mocha (dark) / Latte (light) palettes, swapped at runtime.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum ThemeMode {
+    Dark,
+    Light,
+}
 
-fn usage_color(usage: f32) -> Color {
-    if usage <= 30.0 {
-        ACCENT_GREEN
-    } else if usage <= 60.0 {
-        ACCENT_YELLOW
-    } else if usage <= 80.0 {
-        ACCENT_ORANGE
-    } else {
-        ACCENT_RED
+#[derive(Copy, Clone)]
+struct Theme {
+    bar_bg: Color,
+    fg: Color,
+    subtle: Color,
+    tag_inactive_bg: Color,
+    tag_inactive_text: Color,
+    tag_active_text: Color,
+    urgent_bg: Color,
+    urgent_border: Color,
+    green: Color,
+    yellow: Color,
+    orange: Color,
+    red: Color,
+    teal: Color,
+    blue: Color,
+    mauve: Color,
+    pink: Color,
+}
+
+impl Theme {
+    const fn mocha() -> Self {
+        Self {
+            bar_bg: Color::from_rgba8(0x1E, 0x20, 0x32, 128),
+            fg: Color::from_rgba8(0xCD, 0xD6, 0xF4, 255),
+            subtle: Color::from_rgba8(0x9C, 0xA0, 0xB0, 255),
+            tag_inactive_bg: Color::from_rgba8(0x45, 0x47, 0x5A, 217),
+            tag_inactive_text: Color::from_rgba8(0xCD, 0xD6, 0xF4, 255),
+            tag_active_text: Color::WHITE,
+            urgent_bg: Color::from_rgba8(0xDB, 0x36, 0x45, 255),
+            urgent_border: Color::from_rgba8(0xBC, 0x21, 0x30, 255),
+            green: Color::from_rgba8(0xA6, 0xE3, 0xA1, 255),
+            yellow: Color::from_rgba8(0xF9, 0xE2, 0xAF, 255),
+            orange: Color::from_rgba8(0xFA, 0xB3, 0x87, 255),
+            red: Color::from_rgba8(0xF3, 0x8B, 0xA8, 255),
+            teal: Color::from_rgba8(0x94, 0xE2, 0xD5, 255),
+            blue: Color::from_rgba8(0x89, 0xB4, 0xFA, 255),
+            mauve: Color::from_rgba8(0xCB, 0xA6, 0xF7, 255),
+            pink: Color::from_rgba8(0xF5, 0xC2, 0xE7, 255),
+        }
+    }
+    const fn latte() -> Self {
+        Self {
+            bar_bg: Color::from_rgba8(0xEF, 0xF1, 0xF5, 160),
+            fg: Color::from_rgba8(0x4C, 0x4F, 0x69, 255),
+            subtle: Color::from_rgba8(0x6C, 0x6F, 0x85, 255),
+            tag_inactive_bg: Color::from_rgba8(0xCC, 0xD0, 0xDA, 217),
+            tag_inactive_text: Color::from_rgba8(0x4C, 0x4F, 0x69, 255),
+            tag_active_text: Color::WHITE,
+            urgent_bg: Color::from_rgba8(0xD2, 0x0F, 0x39, 255),
+            urgent_border: Color::from_rgba8(0xA8, 0x0B, 0x2E, 255),
+            green: Color::from_rgba8(0x40, 0xA0, 0x2B, 255),
+            yellow: Color::from_rgba8(0xDF, 0x8E, 0x1D, 255),
+            orange: Color::from_rgba8(0xFE, 0x64, 0x0B, 255),
+            red: Color::from_rgba8(0xD2, 0x0F, 0x39, 255),
+            teal: Color::from_rgba8(0x17, 0x92, 0x99, 255),
+            blue: Color::from_rgba8(0x1E, 0x66, 0xF5, 255),
+            mauve: Color::from_rgba8(0x88, 0x39, 0xEF, 255),
+            pink: Color::from_rgba8(0xEA, 0x76, 0xCB, 255),
+        }
+    }
+    const fn from_mode(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Dark => Self::mocha(),
+            ThemeMode::Light => Self::latte(),
+        }
     }
 }
 
-fn battery_color(pct: f32) -> Color {
-    if pct > 50.0 {
-        ACCENT_GREEN
-    } else if pct > 20.0 {
-        ACCENT_YELLOW
+fn theme_config_path() -> Option<PathBuf> {
+    let home = env::var_os("HOME")?;
+    let mut p = PathBuf::from(home);
+    p.push(".config/xilem_bar/theme");
+    Some(p)
+}
+
+fn load_theme_mode() -> ThemeMode {
+    let Some(p) = theme_config_path() else {
+        return ThemeMode::Dark;
+    };
+    match fs::read_to_string(&p).ok().as_deref().map(str::trim) {
+        Some("light") => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
+}
+
+fn save_theme_mode(mode: ThemeMode) {
+    let Some(p) = theme_config_path() else {
+        return;
+    };
+    if let Some(dir) = p.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let s = match mode {
+        ThemeMode::Dark => "dark",
+        ThemeMode::Light => "light",
+    };
+    if let Err(e) = fs::write(&p, s) {
+        warn!("failed to persist theme mode to {}: {e}", p.display());
+    }
+}
+
+fn usage_color(theme: &Theme, usage: f32) -> Color {
+    if usage <= 30.0 {
+        theme.green
+    } else if usage <= 60.0 {
+        theme.yellow
+    } else if usage <= 80.0 {
+        theme.orange
     } else {
-        ACCENT_RED
+        theme.red
+    }
+}
+
+fn battery_color(theme: &Theme, pct: f32) -> Color {
+    if pct > 50.0 {
+        theme.green
+    } else if pct > 20.0 {
+        theme.yellow
+    } else {
+        theme.red
     }
 }
 
@@ -322,9 +438,9 @@ fn workspace_tag(state: &mut XilemBar, index: usize) -> impl WidgetView<XilemBar
     let (bg, border_w, border_c) = state.tag_visuals(index);
     let is_active = state.is_tag_active(index);
     let text_color = if is_active {
-        Color::WHITE
+        state.theme.tag_active_text
     } else {
-        rgb(0xCD, 0xD6, 0xF4)
+        state.theme.tag_inactive_text
     };
 
     let inner = label(label_str).text_size(TAB_FONT_SIZE).color(text_color);
@@ -364,7 +480,7 @@ fn workspace_row(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
 
 fn layout_toggle(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let open = state.layout_selector_open;
-    let fg = if open { ACCENT_GREEN } else { ACCENT_ORANGE };
+    let fg = if open { state.theme.green } else { state.theme.orange };
     let label_str = state.layout_symbol.clone();
 
     flat(button(
@@ -377,9 +493,10 @@ fn layout_toggle(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
 
 fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let current = state.layout_symbol.clone();
+    let theme = state.theme;
     let mk = move |sym: &'static str, idx: u32, current: String| {
         let is_current = sym == current;
-        let fg = if is_current { ACCENT_GREEN } else { ACCENT_BLUE };
+        let fg = if is_current { theme.green } else { theme.blue };
         flat(button(
             label(sym).text_size(PILL_FONT_SIZE).color(fg),
             move |s: &mut XilemBar| {
@@ -401,8 +518,9 @@ fn layout_options(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
     .gap(Length::px(4.0))
 }
 
-fn usage_pill_view(icon: &'static str, value: f32) -> impl WidgetView<XilemBar> + use<> {
-    let accent = usage_color(value);
+fn usage_pill_view(theme: &Theme, icon: &'static str, value: f32) -> impl WidgetView<XilemBar> + use<> {
+    let accent = usage_color(theme, value);
+    let fg = theme.fg;
     flat(flex(
         Axis::Horizontal,
         (
@@ -411,7 +529,7 @@ fn usage_pill_view(icon: &'static str, value: f32) -> impl WidgetView<XilemBar> 
                 .color(accent),
             label(format!("{:.0}%", value))
                 .text_size(PILL_FONT_SIZE)
-                .color(FG_DEFAULT),
+                .color(fg),
         ),
     )
     .gap(Length::px(3.0)))
@@ -424,7 +542,8 @@ fn battery_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         .map(|s| (s.battery_percent, s.is_charging))
         .unwrap_or((0.0, false));
     let icon = if charging { ICON_BAT_CHG } else { ICON_BAT_FULL };
-    let accent = battery_color(pct);
+    let accent = battery_color(&state.theme, pct);
+    let fg = state.theme.fg;
     flat(flex(
         Axis::Horizontal,
         (
@@ -433,7 +552,7 @@ fn battery_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
                 .color(accent),
             label(format!("{:.0}%", pct))
                 .text_size(PILL_FONT_SIZE)
-                .color(FG_DEFAULT),
+                .color(fg),
         ),
     )
     .gap(Length::px(3.0)))
@@ -445,14 +564,16 @@ fn brightness_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         Some(p) => format!("{}%", p),
         None => "--".to_string(),
     };
+    let accent = state.theme.yellow;
+    let fg = state.theme.fg;
     // Left-click brightens (+10), right-click dims (-10).
     let inner = flex(
         Axis::Horizontal,
         (
             label(ICON_BRIGHT.to_string())
                 .text_size(PILL_FONT_SIZE)
-                .color(ACCENT_YELLOW),
-            label(pct_str).text_size(PILL_FONT_SIZE).color(FG_DEFAULT),
+                .color(accent),
+            label(pct_str).text_size(PILL_FONT_SIZE).color(fg),
         ),
     )
     .gap(Length::px(3.0));
@@ -481,17 +602,18 @@ fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
         "--".to_string()
     };
     let accent = if muted || !has_dev {
-        ACCENT_SUBTLE
+        state.theme.subtle
     } else {
-        ACCENT_TEAL
+        state.theme.teal
     };
+    let fg = state.theme.fg;
     let inner = flex(
         Axis::Horizontal,
         (
             label(icon.to_string())
                 .text_size(PILL_FONT_SIZE)
                 .color(accent),
-            label(pct_str).text_size(PILL_FONT_SIZE).color(FG_DEFAULT),
+            label(pct_str).text_size(PILL_FONT_SIZE).color(fg),
         ),
     )
     .gap(Length::px(3.0));
@@ -514,10 +636,10 @@ fn volume_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     }))
 }
 
-fn screenshot_pill_view(_state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+fn screenshot_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     let inner = label(ICON_SHOT.to_string())
         .text_size(PILL_FONT_SIZE)
-        .color(ACCENT_PINK);
+        .color(state.theme.pink);
     flat(button(inner, |_s: &mut XilemBar| {
         if let Err(e) = Command::new("flameshot").arg("gui").spawn() {
             warn!("Failed to spawn flameshot: {e}");
@@ -525,16 +647,30 @@ fn screenshot_pill_view(_state: &XilemBar) -> impl WidgetView<XilemBar> + use<> 
     }))
 }
 
+fn theme_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    // Show the icon for the mode you'll switch TO: sun if currently dark, moon if light.
+    let (icon, accent) = match state.theme_mode {
+        ThemeMode::Dark => (ICON_SUN, state.theme.yellow),
+        ThemeMode::Light => (ICON_MOON, state.theme.mauve),
+    };
+    flat(button(
+        label(icon.to_string()).text_size(PILL_FONT_SIZE).color(accent),
+        |s: &mut XilemBar| s.toggle_theme(),
+    ))
+}
+
 fn time_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let accent = state.theme.blue;
+    let fg = state.theme.fg;
     let inner = flex(
         Axis::Horizontal,
         (
             label(ICON_TIME.to_string())
                 .text_size(PILL_FONT_SIZE)
-                .color(ACCENT_BLUE),
+                .color(accent),
             label(state.formated_now.clone())
                 .text_size(PILL_FONT_SIZE)
-                .color(FG_DEFAULT),
+                .color(fg),
         ),
     )
     .gap(Length::px(3.0));
@@ -543,27 +679,29 @@ fn time_pill_view(state: &XilemBar) -> impl WidgetView<XilemBar> + use<> {
     }))
 }
 
-fn monitor_pill_view(monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
+fn monitor_pill_view(theme: &Theme, monitor_num: i32) -> impl WidgetView<XilemBar> + use<> {
+    let accent = theme.mauve;
+    let fg = theme.fg;
     flat(flex(
         Axis::Horizontal,
         (
             label(ICON_MON.to_string())
                 .text_size(PILL_FONT_SIZE)
-                .color(ACCENT_MAUVE),
+                .color(accent),
             label(monitor_num_to_icon(monitor_num))
                 .text_size(PILL_FONT_SIZE)
-                .color(FG_DEFAULT),
+                .color(fg),
         ),
     )
     .gap(Length::px(3.0)))
 }
 
-fn scale_pill_view(scale: f32) -> impl WidgetView<XilemBar> + use<> {
+fn scale_pill_view(theme: &Theme, scale: f32) -> impl WidgetView<XilemBar> + use<> {
     flat(flex(
         Axis::Horizontal,
         label(format!("s: {:.2}", scale))
             .text_size(PILL_FONT_SIZE)
-            .color(ACCENT_SUBTLE),
+            .color(theme.subtle),
     ))
 }
 
@@ -580,6 +718,7 @@ fn app_logic(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
         .map(|m| m.monitor_num)
         .unwrap_or(0);
 
+    let theme = state.theme;
     let tags = workspace_row(state);
     let lt_btn = layout_toggle(state);
     let lt_options: Option<_> = if state.layout_selector_open {
@@ -600,9 +739,9 @@ fn app_logic(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
                 FlexSpacer::Flex(1.0),
             ),
             (
-                usage_pill_view(ICON_CPU, cpu),
+                usage_pill_view(&theme, ICON_CPU, cpu),
                 FlexSpacer::Fixed(Length::px(2.0)),
-                usage_pill_view(ICON_MEM, mem),
+                usage_pill_view(&theme, ICON_MEM, mem),
                 FlexSpacer::Fixed(Length::px(2.0)),
                 battery_pill_view(state),
                 FlexSpacer::Fixed(Length::px(2.0)),
@@ -614,11 +753,13 @@ fn app_logic(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
                 FlexSpacer::Fixed(Length::px(2.0)),
                 screenshot_pill_view(state),
                 FlexSpacer::Fixed(Length::px(2.0)),
+                theme_pill_view(state),
+                FlexSpacer::Fixed(Length::px(2.0)),
                 time_pill_view(state),
                 FlexSpacer::Fixed(Length::px(2.0)),
-                monitor_pill_view(monitor_num),
+                monitor_pill_view(&theme, monitor_num),
                 FlexSpacer::Fixed(Length::px(2.0)),
-                scale_pill_view(1.0),
+                scale_pill_view(&theme, 1.0),
             ),
         ),
     )
@@ -693,10 +834,11 @@ fn shared_mem_worker(state: &mut XilemBar) -> impl View<XilemBar, (), ViewCtx, E
 
 // Top-level view: fork attaches the background tasks to the visible tree.
 fn root(state: &mut XilemBar) -> impl WidgetView<XilemBar> + use<> {
+    let bar_bg = state.theme.bar_bg;
     fork(
         sized_box(app_logic(state))
             .padding(Padding::from_vh(Length::px(0.0), Length::px(6.0)))
-            .background(with_alpha(rgb(0x1E, 0x20, 0x32), 0.5)),
+            .background(bar_bg),
         (clock_task(), shared_mem_worker(state)),
     )
 }
