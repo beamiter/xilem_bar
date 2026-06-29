@@ -51,7 +51,7 @@ const TAG_ICONS: [&str; 9] = [
     "\u{F01F0}", "\u{F0297}",
 ];
 
-const ICON_CPU: &str = "\u{F4BC}";
+const ICON_CPU: &str = "\u{F0FB1}";
 const ICON_MEM: &str = "\u{F035B}";
 const ICON_BAT_FULL: &str = "\u{F0079}";
 const ICON_BAT_CHG: &str = "\u{F0084}";
@@ -75,7 +75,7 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }
 fn pill_padding() -> Padding {
-    Padding::from_vh(Length::px(0.0), Length::px(4.0))
+    Padding::from_vh(Length::px(0.0), Length::px(2.0))
 }
 // -------- App state ----------------------------------------------------------
 
